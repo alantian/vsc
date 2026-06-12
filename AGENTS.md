@@ -15,7 +15,8 @@ It is for people who already manage their devbox, SSH, tmux, byobu, and coding a
 - Do not start or stop coding agents.
 - Do not create a central project registry.
 - Do not store secrets.
-- Do not add authentication, TLS, or reverse proxies (Tailscale Serve was tried and removed — too slow; users access `ip:port` directly over their private network).
+- Do not add authentication or reverse proxies beyond `tailscale serve`. TLS is provided only via `tailscale serve` on a separate https port (`port + offset`). Never put serve on code-server's own port: serve binds real sockets on the tailscale IPs and races a `0.0.0.0` bind on the same port — the loser gets EADDRINUSE after a restart (verified empirically; this was the old "bind addr conflict").
+- Tailscale must stay optional. If `tailscale`/`tailscale serve` is unavailable or unauthorized, warn and continue — plain `http://ip:port` access must always work.
 - Do not modify a project's `.gitignore` automatically. Use `.git/info/exclude` for local ignores.
 - Keep project-local editor state in `.code-server-web/`.
 - Keep the tool small.
@@ -28,6 +29,7 @@ It is for people who already manage their devbox, SSH, tmux, byobu, and coding a
 - Use deterministic ports derived from the repo path.
 - Allow manual port override with `VSC_PORT`.
 - Bind `code-server` to `0.0.0.0` — host is assumed reachable only via private network (tailnet). Print the tailnet IP in URLs when `tailscale` is available.
+- When tailscale is running, also configure `tailscale serve --bg --https=<port+offset> http://127.0.0.1:<port>` on `up` and remove it on `down`. The https URL is printed first.
 - Use transient `systemd --user` services (`systemd-run --user`). There is no `.service` file on disk. The unit exists only while `code-server` is running and is gone after stop or crash.
 
 ## Non-goals

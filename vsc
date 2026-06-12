@@ -3,9 +3,10 @@ set -euo pipefail
 
 BASE_PORT="${VSC_BASE_PORT:-9100}"
 PORT_RANGE="${VSC_PORT_RANGE:-800}"
+HTTPS_OFFSET="${VSC_HTTPS_OFFSET:-1000}"
 STATE_DIR_NAME=".code-server-web"
 
-for cmd in code-server systemd-run python3 ss; do
+for cmd in code-server systemd-run python3 ss curl; do
   command -v "$cmd" >/dev/null 2>&1 || { echo "error: $cmd is required but not found"; exit 1; }
 done
 
@@ -26,25 +27,69 @@ print(base + h % span)
 PY
 )}"
 
+https_port=$((port + HTTPS_OFFSET))
 unit="vsc-${port}-${name}"
 state_dir="$repo/$STATE_DIR_NAME"
 user_data_dir="$state_dir/user-data"
 ext_dir="$HOME/.local/share/code-server/shared-extensions"
 
-# One URL per way to reach this host: tailnet DNS name first, then each
-# private-range IPv4 (Tailscale and LAN alike, since code-server binds
-# 0.0.0.0). Public IPs are deliberately excluded: code-server runs with no
-# auth, so it must never be advertised outside private networks.
+tailnet_dns() {
+  tailscale status --json 2>/dev/null \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin).get("Self",{}).get("DNSName","").rstrip("."))' \
+    2>/dev/null || true
+}
+
+# tailscale serve needs root or operator permissions; try plain first, then
+# passwordless sudo. Callers treat failure as "no https", never as fatal.
+ts_serve() {
+  tailscale serve "$@" 2>/dev/null || sudo -n tailscale serve "$@" 2>/dev/null
+}
+
+ts_serve_active() {
+  local https_port="$1"
+  tailscale serve status --json 2>/dev/null | grep -q "\"${https_port}\":"
+}
+
+# One URL per way to reach this host: tailscale-serve https first (if
+# configured), then the tailnet DNS name, then each private-range IPv4
+# (Tailscale and LAN alike, since code-server binds 0.0.0.0). Public IPs are
+# deliberately excluded: code-server runs with no auth, so it must never be
+# advertised outside private networks.
 host_urls() {
   local port="$1" dns
-  dns="$(tailscale status --json 2>/dev/null \
-    | python3 -c 'import json,sys; print(json.load(sys.stdin).get("Self",{}).get("DNSName","").rstrip("."))' \
-    2>/dev/null || true)"
+  local https_port=$((port + HTTPS_OFFSET))
+  dns="$(tailnet_dns)"
+  if [[ -n "$dns" ]] && ts_serve_active "$https_port"; then
+    echo "https://$dns:$https_port"
+  fi
   [[ -n "$dns" ]] && echo "http://$dns:$port"
   ip -4 addr show scope global 2>/dev/null \
     | grep -oP 'inet \K[0-9.]+' \
     | grep -E '^(10|192\.168|172\.(1[6-9]|2[0-9]|3[01])|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7]))\.' \
     | sed "s|.*|http://&:$port|"
+}
+
+# Expose this instance over the tailnet with TLS: tailscale serve terminates
+# https on $https_port and proxies to the local code-server. The https port
+# MUST differ from code-server's port — serve binds real sockets on the
+# tailscale IPs and races a 0.0.0.0 bind on the same port (verified: the
+# loser gets EADDRINUSE after any restart).
+serve_up() {
+  tailscale status >/dev/null 2>&1 || return 0
+
+  if ss -ltn "( sport = :$https_port )" | grep -q ":$https_port" \
+     && ! ts_serve_active "$https_port"; then
+    echo "warn: port $https_port in use by something else; skipping tailscale https"
+    return 0
+  fi
+
+  ts_serve --bg --https="$https_port" "http://127.0.0.1:$port" >/dev/null \
+    || echo "warn: tailscale serve failed; https url unavailable (try: sudo tailscale set --operator=\$USER)"
+}
+
+serve_down() {
+  ts_serve_active "$https_port" || return 0
+  ts_serve --https="$https_port" off >/dev/null || true
 }
 
 exclude_state_dir() {
@@ -84,12 +129,22 @@ case "${1:-up}" in
         --user-data-dir "$USER_DATA_DIR" \
         --extensions-dir "$EXTENSIONS_DIR"'
 
+    # code-server takes a few seconds to boot; don't print URLs until it
+    # accepts connections, or the first click lands on a dead port and the
+    # workbench wedges on an infinite spinner.
+    for _ in $(seq 1 30); do
+      curl -sf -o /dev/null -m 2 "http://127.0.0.1:$port/healthz" && break
+      sleep 0.5
+    done
+
+    serve_up
     host_urls "$port" | sed 's/^/url: /'
     echo "repo: $repo"
     echo "unit: $unit"
     ;;
 
   down)
+    serve_down
     systemctl --user stop "$unit.service" 2>/dev/null || true
     echo "stopped: $unit"
     ;;
@@ -120,6 +175,7 @@ case "${1:-up}" in
     echo "env:"
     echo "  VSC_PORT=9123 vsc up"
     echo "  VSC_BASE_PORT=9100 VSC_PORT_RANGE=800 vsc up"
+    echo "  VSC_HTTPS_OFFSET=1000 vsc up   # tailscale https port = port + offset"
     exit 1
     ;;
 esac
