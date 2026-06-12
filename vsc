@@ -3,16 +3,11 @@ set -euo pipefail
 
 BASE_PORT="${VSC_BASE_PORT:-9100}"
 PORT_RANGE="${VSC_PORT_RANGE:-800}"
-USE_SERVE="${VSC_TAILSCALE_SERVE:-1}"
 STATE_DIR_NAME=".code-server-web"
 
 for cmd in code-server systemd-run python3 ss; do
   command -v "$cmd" >/dev/null 2>&1 || { echo "error: $cmd is required but not found"; exit 1; }
 done
-if [[ "$USE_SERVE" == "1" ]] && ! command -v tailscale >/dev/null 2>&1; then
-  echo "warning: tailscale not found; disabling Tailscale Serve (set VSC_TAILSCALE_SERVE=0 to suppress)"
-  USE_SERVE=0
-fi
 
 repo="${2:-$PWD}"
 repo="$(cd "$repo" && pwd)"
@@ -36,10 +31,10 @@ state_dir="$repo/$STATE_DIR_NAME"
 user_data_dir="$state_dir/user-data"
 ext_dir="$HOME/.local/share/code-server/shared-extensions"
 
-tailscale_dns_name() {
-  tailscale status --json 2>/dev/null \
-    | python3 -c 'import json,sys; print(json.load(sys.stdin).get("Self",{}).get("DNSName","").rstrip("."))' \
-    2>/dev/null || true
+host_addr() {
+  local ip
+  ip="$(tailscale ip -4 2>/dev/null | head -1 || true)"
+  echo "${ip:-<this-host-ip>}"
 }
 
 exclude_state_dir() {
@@ -63,11 +58,6 @@ case "${1:-up}" in
       exit 1
     fi
 
-    # Tailscale Serve occupies the Tailscale IP on this port, so bind to
-    # 127.0.0.1 when it is active (it reverse-proxies) and 0.0.0.0 otherwise.
-    bind_addr="127.0.0.1"
-    [[ "$USE_SERVE" != "1" ]] && bind_addr="0.0.0.0"
-
     systemd-run --user \
       --unit="$unit" \
       --collect \
@@ -75,47 +65,27 @@ case "${1:-up}" in
       --property=RestartSec=2 \
       --setenv=REPO_DIR="$repo" \
       --setenv=CODE_PORT="$port" \
-      --setenv=BIND_ADDR="$bind_addr" \
       --setenv=USER_DATA_DIR="$user_data_dir" \
       --setenv=EXTENSIONS_DIR="$ext_dir" \
       /bin/bash -lc 'exec code-server "$REPO_DIR" \
-        --bind-addr ${BIND_ADDR}:${CODE_PORT} \
+        --bind-addr 0.0.0.0:${CODE_PORT} \
         --auth none \
         --disable-telemetry \
         --user-data-dir "$USER_DATA_DIR" \
         --extensions-dir "$EXTENSIONS_DIR"'
 
-    if [[ "$USE_SERVE" == "1" ]]; then
-      sudo tailscale serve --bg --https="$port" "localhost:$port" >/dev/null
-      dns="$(tailscale_dns_name)"
-      echo "url: https://${dns:-<devbox-tailnet-name>}:$port"
-    else
-      echo "url: http://<devbox-tailscale-ip>:$port  (direct)"
-    fi
-
+    echo "url: http://$(host_addr):$port"
     echo "repo: $repo"
     echo "unit: $unit"
     ;;
 
   down)
     systemctl --user stop "$unit.service" 2>/dev/null || true
-
-    if [[ "$USE_SERVE" == "1" ]]; then
-      sudo tailscale serve --https="$port" off >/dev/null || true
-    fi
-
     echo "stopped: $unit"
     ;;
 
   status)
-    ts_ports=""
-    dns=""
-    if command -v tailscale >/dev/null 2>&1; then
-      ts_ports="$(tailscale serve status 2>/dev/null \
-        | grep -oE 'https://[^ ]+:[0-9]+' | grep -oE '[0-9]+$' | sort -u || true)"
-      dns="$(tailscale_dns_name)"
-    fi
-
+    addr="$(host_addr)"
     found=0
     while read -r svc state _rest; do
       [[ -z "$svc" ]] && continue
@@ -123,10 +93,7 @@ case "${1:-up}" in
       base="${svc%.service}"
       port="$(echo "$base" | cut -d- -f2)"
       echo "$base  ($state)"
-      if echo "$ts_ports" | grep -qx "$port" 2>/dev/null; then
-        echo "  https://${dns:-<tailnet>}:$port"
-      fi
-      echo "  http://<tailscale-ip>:$port"
+      echo "  http://$addr:$port"
     done < <(systemctl --user list-units 'vsc-*' --no-legend --no-pager 2>/dev/null \
                | awk '{print $1, $3}')
 
@@ -141,7 +108,6 @@ case "${1:-up}" in
     echo
     echo "env:"
     echo "  VSC_PORT=9123 vsc up"
-    echo "  VSC_TAILSCALE_SERVE=0 vsc up"
     echo "  VSC_BASE_PORT=9100 VSC_PORT_RANGE=800 vsc up"
     exit 1
     ;;

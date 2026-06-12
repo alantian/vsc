@@ -15,7 +15,7 @@ It is for people who already manage their devbox, SSH, tmux, byobu, and coding a
 - Do not start or stop coding agents.
 - Do not create a central project registry.
 - Do not store secrets.
-- Do not bind `code-server` to `0.0.0.0` by default.
+- Do not add authentication, TLS, or reverse proxies (Tailscale Serve was tried and removed — too slow; users access `ip:port` directly over their private network).
 - Do not modify a project's `.gitignore` automatically. Use `.git/info/exclude` for local ignores.
 - Keep project-local editor state in `.code-server-web/`.
 - Keep the tool small.
@@ -27,8 +27,7 @@ It is for people who already manage their devbox, SSH, tmux, byobu, and coding a
 - Prefer stateless behavior where practical.
 - Use deterministic ports derived from the repo path.
 - Allow manual port override with `VSC_PORT`.
-- Keep Tailscale Serve optional.
-- Bind `code-server` to `127.0.0.1`.
+- Bind `code-server` to `0.0.0.0` — host is assumed reachable only via private network (tailnet). Print the tailnet IP in URLs when `tailscale` is available.
 - Use transient `systemd --user` services (`systemd-run --user`). There is no `.service` file on disk. The unit exists only while `code-server` is running and is gone after stop or crash.
 
 ## Non-goals

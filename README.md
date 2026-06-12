@@ -10,13 +10,13 @@ Manages only `code-server`. Does not touch tmux, byobu, agents, or project lifec
 2. Attach to tmux/byobu.
 3. `cd` into your repo.
 4. `vsc up` → get a browser VS Code URL.
-5. Open the URL from any device on your Tailscale network.
+5. Open the URL from any device on your private network (e.g. Tailscale).
 
 ## Dependencies
 
 Required: `code-server`, `systemd-run`, `python3`, `ss`
 
-Optional: `tailscale` (for HTTPS URL via Tailscale Serve)
+Optional: `tailscale` (only used to print the tailnet IP in the URL)
 
 ## Install
 
@@ -34,14 +34,13 @@ Add `~/.local/bin` to your `PATH` if needed.
 vsc up              # start code-server for current repo
 vsc up ~/src/proj   # start for a specific repo
 vsc down            # stop current repo's code-server
-vsc status          # show active vsc services and Tailscale Serve state
+vsc status          # show active vsc services and their URLs
 ```
 
 Environment overrides:
 
 ```bash
 VSC_PORT=9123 vsc up                           # specific port
-VSC_TAILSCALE_SERVE=0 vsc up                   # disable Tailscale Serve
 VSC_BASE_PORT=9100 VSC_PORT_RANGE=800 vsc up   # change port range
 ```
 
@@ -57,12 +56,6 @@ VSC_BASE_PORT=9100 VSC_PORT_RANGE=800 vsc up   # change port range
 
 The systemd unit is created with `systemd-run --user` — it lives only in memory while `code-server` is running. There is no `.service` file on disk. The unit is gone after `vsc down` or if `code-server` exits.
 
-## Tailscale Serve
-
-Enabled by default. Wraps `code-server` in HTTPS inside your tailnet, which makes browser VS Code features work correctly from an HTTPS origin.
-
-Disable with `VSC_TAILSCALE_SERVE=0`.
-
 ## Security
 
-`code-server` runs `--auth none --bind-addr 0.0.0.0:<port>`. Safe only inside a Tailscale network where access is already restricted to tailnet devices. Do not expose the port on a public network without adding authentication.
+`code-server` runs `--auth none --bind-addr 0.0.0.0:<port>` — no authentication, listening on all interfaces. This is only acceptable when the host is reachable solely over a private network such as a tailnet. Do not run this on a host with a public IP and open firewall.
