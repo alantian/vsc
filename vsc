@@ -31,10 +31,20 @@ state_dir="$repo/$STATE_DIR_NAME"
 user_data_dir="$state_dir/user-data"
 ext_dir="$HOME/.local/share/code-server/shared-extensions"
 
-host_addr() {
-  local ip
-  ip="$(tailscale ip -4 2>/dev/null | head -1 || true)"
-  echo "${ip:-<this-host-ip>}"
+# One URL per way to reach this host: tailnet DNS name first, then each
+# private-range IPv4 (Tailscale and LAN alike, since code-server binds
+# 0.0.0.0). Public IPs are deliberately excluded: code-server runs with no
+# auth, so it must never be advertised outside private networks.
+host_urls() {
+  local port="$1" dns
+  dns="$(tailscale status --json 2>/dev/null \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin).get("Self",{}).get("DNSName","").rstrip("."))' \
+    2>/dev/null || true)"
+  [[ -n "$dns" ]] && echo "http://$dns:$port"
+  ip -4 addr show scope global 2>/dev/null \
+    | grep -oP 'inet \K[0-9.]+' \
+    | grep -E '^(10|192\.168|172\.(1[6-9]|2[0-9]|3[01])|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7]))\.' \
+    | sed "s|.*|http://&:$port|"
 }
 
 exclude_state_dir() {
@@ -74,7 +84,7 @@ case "${1:-up}" in
         --user-data-dir "$USER_DATA_DIR" \
         --extensions-dir "$EXTENSIONS_DIR"'
 
-    echo "url: http://$(host_addr):$port"
+    host_urls "$port" | sed 's/^/url: /'
     echo "repo: $repo"
     echo "unit: $unit"
     ;;
@@ -85,7 +95,6 @@ case "${1:-up}" in
     ;;
 
   status)
-    addr="$(host_addr)"
     found=0
     while read -r svc state _rest; do
       [[ -z "$svc" ]] && continue
@@ -93,11 +102,13 @@ case "${1:-up}" in
       base="${svc%.service}"
       port="$(echo "$base" | cut -d- -f2)"
       echo "$base  ($state)"
-      echo "  http://$addr:$port"
+      host_urls "$port" | sed 's/^/  /'
     done < <(systemctl --user list-units 'vsc-*' --no-legend --no-pager 2>/dev/null \
                | awk '{print $1, $3}')
 
-    [[ $found -eq 0 ]] && echo "no vsc services running"
+    if [[ $found -eq 0 ]]; then
+      echo "no vsc services running"
+    fi
     ;;
 
   *)
