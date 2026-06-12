@@ -63,6 +63,11 @@ case "${1:-up}" in
       exit 1
     fi
 
+    # Tailscale Serve occupies the Tailscale IP on this port, so bind to
+    # 127.0.0.1 when it is active (it reverse-proxies) and 0.0.0.0 otherwise.
+    bind_addr="127.0.0.1"
+    [[ "$USE_SERVE" != "1" ]] && bind_addr="0.0.0.0"
+
     systemd-run --user \
       --unit="$unit" \
       --collect \
@@ -70,10 +75,11 @@ case "${1:-up}" in
       --property=RestartSec=2 \
       --setenv=REPO_DIR="$repo" \
       --setenv=CODE_PORT="$port" \
+      --setenv=BIND_ADDR="$bind_addr" \
       --setenv=USER_DATA_DIR="$user_data_dir" \
       --setenv=EXTENSIONS_DIR="$ext_dir" \
       /bin/bash -lc 'exec code-server "$REPO_DIR" \
-        --bind-addr 0.0.0.0:${CODE_PORT} \
+        --bind-addr ${BIND_ADDR}:${CODE_PORT} \
         --auth none \
         --disable-telemetry \
         --user-data-dir "$USER_DATA_DIR" \
@@ -83,8 +89,9 @@ case "${1:-up}" in
       sudo tailscale serve --bg --https="$port" "localhost:$port" >/dev/null
       dns="$(tailscale_dns_name)"
       echo "url: https://${dns:-<devbox-tailnet-name>}:$port"
+    else
+      echo "url: http://<devbox-tailscale-ip>:$port  (direct)"
     fi
-    echo "url: http://<devbox-tailscale-ip>:$port  (direct)"
 
     echo "repo: $repo"
     echo "unit: $unit"
