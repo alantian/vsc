@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BASE_PORT="${VSC_BASE_PORT:-9100}"
+PORT_RANGE="${VSC_PORT_RANGE:-800}"
+USE_SERVE="${VSC_TAILSCALE_SERVE:-1}"
+STATE_DIR_NAME=".code-server-web"
+
+for cmd in code-server systemd-run python3 ss; do
+  command -v "$cmd" >/dev/null 2>&1 || { echo "error: $cmd is required but not found"; exit 1; }
+done
+if [[ "$USE_SERVE" == "1" ]] && ! command -v tailscale >/dev/null 2>&1; then
+  echo "warning: tailscale not found; disabling Tailscale Serve (set VSC_TAILSCALE_SERVE=0 to suppress)"
+  USE_SERVE=0
+fi
+
+repo="${2:-$PWD}"
+repo="$(cd "$repo" && pwd)"
+name="$(basename "$repo" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')"
+
+port="${VSC_PORT:-$(
+  python3 - "$repo" "$BASE_PORT" "$PORT_RANGE" <<'PY'
+import hashlib
+import sys
+
+repo = sys.argv[1]
+base = int(sys.argv[2])
+span = int(sys.argv[3])
+h = int(hashlib.sha256(repo.encode()).hexdigest()[:8], 16)
+print(base + h % span)
+PY
+)}"
+
+unit="vsc-${port}-${name}"
+state_dir="$repo/$STATE_DIR_NAME"
+user_data_dir="$state_dir/user-data"
+ext_dir="$HOME/.local/share/code-server/shared-extensions"
+
+tailscale_dns_name() {
+  tailscale status --json 2>/dev/null \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin).get("Self",{}).get("DNSName","").rstrip("."))' \
+    2>/dev/null || true
+}
+
+exclude_state_dir() {
+  [[ -d "$repo/.git" ]] || return 0
+
+  mkdir -p "$repo/.git/info"
+  touch "$repo/.git/info/exclude"
+
+  grep -qxF "$STATE_DIR_NAME/" "$repo/.git/info/exclude" \
+    || echo "$STATE_DIR_NAME/" >> "$repo/.git/info/exclude"
+}
+
+case "${1:-up}" in
+  up)
+    mkdir -p "$user_data_dir" "$ext_dir"
+    exclude_state_dir
+
+    if ss -ltn "( sport = :$port )" | grep -q ":$port"; then
+      echo "Port $port is already in use."
+      echo "Try: VSC_PORT=9123 vsc up"
+      exit 1
+    fi
+
+    systemd-run --user \
+      --unit="$unit" \
+      --collect \
+      --property=Restart=on-failure \
+      --property=RestartSec=2 \
+      --setenv=REPO_DIR="$repo" \
+      --setenv=CODE_PORT="$port" \
+      --setenv=USER_DATA_DIR="$user_data_dir" \
+      --setenv=EXTENSIONS_DIR="$ext_dir" \
+      /bin/bash -lc 'exec code-server "$REPO_DIR" \
+        --bind-addr 127.0.0.1:${CODE_PORT} \
+        --auth none \
+        --disable-telemetry \
+        --user-data-dir "$USER_DATA_DIR" \
+        --extensions-dir "$EXTENSIONS_DIR"'
+
+    if [[ "$USE_SERVE" == "1" ]]; then
+      sudo tailscale serve --bg --https="$port" "localhost:$port" >/dev/null
+      dns="$(tailscale_dns_name)"
+      echo "url: https://${dns:-<devbox-tailnet-name>}:$port"
+    else
+      echo "url: http://<devbox-tailscale-ip>:$port"
+    fi
+
+    echo "repo: $repo"
+    echo "unit: $unit"
+    ;;
+
+  down)
+    systemctl --user stop "$unit.service" 2>/dev/null || true
+
+    if [[ "$USE_SERVE" == "1" ]]; then
+      sudo tailscale serve --https="$port" off >/dev/null || true
+    fi
+
+    echo "stopped: $unit"
+    ;;
+
+  status)
+    systemctl --user list-units 'vsc-*' --no-pager || true
+    echo
+    tailscale serve status 2>/dev/null || true
+    ;;
+
+  *)
+    echo "usage:"
+    echo "  vsc up [repo-dir]"
+    echo "  vsc down [repo-dir]"
+    echo "  vsc status"
+    echo
+    echo "env:"
+    echo "  VSC_PORT=9123 vsc up"
+    echo "  VSC_TAILSCALE_SERVE=0 vsc up"
+    echo "  VSC_BASE_PORT=9100 VSC_PORT_RANGE=800 vsc up"
+    exit 1
+    ;;
+esac
