@@ -65,4 +65,4 @@ Disable with `VSC_TAILSCALE_SERVE=0`.
 
 ## Security
 
-`code-server` runs `--auth none --bind-addr 127.0.0.1:<port>`. Safe only because it is never directly exposed. Do not change to `0.0.0.0` without adding authentication.
+`code-server` runs `--auth none --bind-addr 0.0.0.0:<port>`. Safe only inside a Tailscale network where access is already restricted to tailnet devices. Do not expose the port on a public network without adding authentication.

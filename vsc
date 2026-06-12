@@ -73,7 +73,7 @@ case "${1:-up}" in
       --setenv=USER_DATA_DIR="$user_data_dir" \
       --setenv=EXTENSIONS_DIR="$ext_dir" \
       /bin/bash -lc 'exec code-server "$REPO_DIR" \
-        --bind-addr 127.0.0.1:${CODE_PORT} \
+        --bind-addr 0.0.0.0:${CODE_PORT} \
         --auth none \
         --disable-telemetry \
         --user-data-dir "$USER_DATA_DIR" \
