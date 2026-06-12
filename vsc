@@ -101,9 +101,29 @@ case "${1:-up}" in
     ;;
 
   status)
-    systemctl --user list-units 'vsc-*' --no-pager || true
-    echo
-    tailscale serve status 2>/dev/null || true
+    ts_ports=""
+    dns=""
+    if command -v tailscale >/dev/null 2>&1; then
+      ts_ports="$(tailscale serve status 2>/dev/null \
+        | grep -oE 'https://[^ ]+:[0-9]+' | grep -oE '[0-9]+$' | sort -u || true)"
+      dns="$(tailscale_dns_name)"
+    fi
+
+    found=0
+    while read -r svc state _rest; do
+      [[ -z "$svc" ]] && continue
+      found=1
+      base="${svc%.service}"
+      port="$(echo "$base" | cut -d- -f2)"
+      echo "$base  ($state)"
+      if echo "$ts_ports" | grep -qx "$port" 2>/dev/null; then
+        echo "  https://${dns:-<tailnet>}:$port"
+      fi
+      echo "  http://<tailscale-ip>:$port"
+    done < <(systemctl --user list-units 'vsc-*' --no-legend --no-pager 2>/dev/null \
+               | awk '{print $1, $3}')
+
+    [[ $found -eq 0 ]] && echo "no vsc services running"
     ;;
 
   *)
